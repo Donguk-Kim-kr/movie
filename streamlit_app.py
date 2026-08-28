@@ -6,23 +6,60 @@ streamlit_app.py
 - "즐겨찾기 관리" 탭: 즐겨찾기 메모 수정 / 삭제 (팀원 C 담당)
   (즐겨찾기 추가는 카탈로그 탭의 "즐겨찾기" 버튼에서 이루어짐 - 팀원 B 영역)
 '''
-import os
 import requests
 import streamlit as st
-from dotenv import load_dotenv
+from contextlib import contextmanager
 
-load_dotenv()
+from fastapi import HTTPException
 
-API_BASE = 'http://127.0.0.1:8000'
-KOBIS_LIST_URL = 'http://www.kobis.or.kr/kobisopenapi/webservice/rest/movie/searchMovieList.json'
-KOBIS_INFO_URL = 'http://www.kobis.or.kr/kobisopenapi/webservice/rest/movie/searchMovieInfo.json'
+from database.db_connection import engine, SessionFactory
+from database.orm import Base
+from repositories.favorite_repository import FavoriteRepository
+from repositories.movie_repository import MovieRepository
+from schema.request import (
+    FavoriteCreateRequest,
+    FavoriteUpdateRequest,
+    MovieCreateRequest,
+)
+from services.favorite_service import FavoriteService
+from services.movie_service import MovieService
+
+KOBIS_LIST_URL = 'https://www.kobis.or.kr/kobisopenapi/webservice/rest/movie/searchMovieList.json'
+KOBIS_INFO_URL = 'https://www.kobis.or.kr/kobisopenapi/webservice/rest/movie/searchMovieInfo.json'
 
 st.set_page_config(page_title='영화 즐겨찾기', page_icon='🎬')
 st.title('🎬 영화 카탈로그 & 즐겨찾기')
 
+@st.cache_resource
+def initialize_database():
+    Base.metadata.create_all(bind=engine)
+    return True
+
+
+initialize_database()
+
+
+@contextmanager
+def open_services():
+    with SessionFactory() as session:
+        movie_repository = MovieRepository(session)
+        favorite_repository = FavoriteRepository(session)
+
+        try:
+            yield (
+                MovieService(movie_repository),
+                FavoriteService(
+                    favorite_repository,
+                    movie_repository,
+                ),
+            )
+        except Exception:
+            session.rollback()
+            raise
+
 
 def get_kobis_key() -> str | None:
-    return os.getenv('KOBIS_API_KEY')
+    return st.secrets.get("KOBIS_API_KEY")
 
 
 RAW_PAGE_SIZE = 100  # KOBIS가 한 번에 줄 수 있는 최대 개수
@@ -40,7 +77,11 @@ def fetch_kobis_raw(api_key, keyword, director_nm, start_year, end_year, raw_pag
         params['openStartDt'] = start_year
     if end_year:
         params['openEndDt'] = end_year
-    res = requests.get(KOBIS_LIST_URL, params=params)
+    res = requests.get(
+    KOBIS_LIST_URL,
+    params=params,
+    timeout=15,
+)
     res.raise_for_status()
     return res.json()['movieListResult']
 
@@ -76,34 +117,63 @@ def fill_catalog_cache(api_key, keyword, director_nm, start_year, end_year, min_
 
 def fetch_kobis_detail(api_key, movie_cd):
     """상세정보(감독/배우 포함) 조회 - 즐겨찾기 등록 시 카탈로그에 저장할 정보를 채우기 위함"""
-    res = requests.get(KOBIS_INFO_URL, params={'key': api_key, 'movieCd': movie_cd})
+    res = requests.get(
+    KOBIS_INFO_URL,
+    params={"key": api_key, "movieCd": movie_cd},
+    timeout=15,
+)
     res.raise_for_status()
     return res.json()['movieInfoResult']['movieInfo']
 
 
 def add_to_favorites(api_key, movie_cd, movie_nm):
-    """즐겨찾기 버튼 클릭 시: KOBIS 상세정보 조회 -> 카탈로그에 등록(이미 있으면 무시) -> 즐겨찾기 추가"""
-    info = fetch_kobis_detail(api_key, movie_cd)
+    try:
+        info = fetch_kobis_detail(api_key, movie_cd)
 
-    body = {
-        'movie_cd': movie_cd,
-        'movie_nm': movie_nm,
-        'movie_nm_en': info.get('movieNmEn') or None,
-        'open_dt': info.get('openDt') or None,
-        'show_tm': info.get('showTm') or None,
-        'genre': '|'.join(g['genreNm'] for g in info.get('genres', [])) or None,
-        'nation': '|'.join(n['nationNm'] for n in info.get('nations', [])) or None,
-        'directors': [d['peopleNm'] for d in info.get('directors', [])],
-        'actors': [a['peopleNm'] for a in info.get('actors', [])],
-    }
+        movie = MovieCreateRequest(
+            movie_cd=movie_cd,
+            movie_nm=movie_nm,
+            movie_nm_en=info.get("movieNmEn") or None,
+            open_dt=info.get("openDt") or None,
+            show_tm=info.get("showTm") or None,
+            genre="|".join(
+                genre["genreNm"]
+                for genre in info.get("genres", [])
+            ) or None,
+            nation="|".join(
+                nation["nationNm"]
+                for nation in info.get("nations", [])
+            ) or None,
+            directors=[
+                director["peopleNm"]
+                for director in info.get("directors", [])
+            ],
+            actors=[
+                actor["peopleNm"]
+                for actor in info.get("actors", [])
+            ],
+        )
 
-    requests.post(f'{API_BASE}/movies/ensure', json=body)  # 카탈로그에 없으면 등록 (있으면 무시)
-    fav_res = requests.post(f'{API_BASE}/favorites', json={'movie_cd': movie_cd})
+        with open_services() as (
+            movie_service,
+            favorite_service,
+        ):
+            movie_service.create_movie_if_not_exists(movie)
 
-    if fav_res.status_code == 201:
+            favorite_service.add_favorite(
+                FavoriteCreateRequest(movie_cd=movie_cd)
+            )
+
         st.success(f'"{movie_nm}" 즐겨찾기 추가됨')
-    else:
-        st.warning(fav_res.json().get('detail', '이미 즐겨찾기했거나 실패했습니다.'))
+
+    except HTTPException as error:
+        st.warning(error.detail)
+
+    except requests.RequestException:
+        st.error("KOBIS 상세정보를 가져오지 못했습니다.")
+
+    except Exception:
+        st.error("즐겨찾기 저장 중 오류가 발생했습니다.")
 
 
 tab_catalog, tab_manage = st.tabs(['카탈로그 (KOBIS 실시간)', '즐겨찾기 관리'])
@@ -113,7 +183,7 @@ with tab_catalog:
     api_key = get_kobis_key()
 
     if not api_key:
-        st.error('.env 파일에 KOBIS_API_KEY가 설정되어 있지 않습니다.')
+        st.error('Secrets에 KOBIS_API_KEY가 설정되어 있지 않습니다.')
         st.stop()
 
     col1, col2 = st.columns(2)
@@ -153,8 +223,8 @@ with tab_catalog:
     try:
         # 현재 페이지(display_page) + 다음 페이지 존재 여부 확인을 위해 한 페이지 더 채워둠
         fill_catalog_cache(api_key, keyword, director_nm, start_year, end_year, (display_page + 2) * PAGE_SIZE)
-    except Exception as e:
-        st.error(f'KOBIS 조회 실패: {e}')
+    except Exception:
+        st.error('KOBIS 조회에 실패했습니다.')
 
     cache = st.session_state.catalog_cache
     movies = cache[display_page * PAGE_SIZE : (display_page + 1) * PAGE_SIZE]
@@ -180,47 +250,134 @@ with tab_catalog:
 
 # ===================== 즐겨찾기 관리 (팀원 C 담당) =====================
 with tab_manage:
-    res = requests.get(f'{API_BASE}/favorites')
-    favorites = res.json() if res.status_code == 200 else []
+    try:
+        with open_services() as (_, favorite_service):
+            favorites = [
+                favorite.model_dump()
+                for favorite in favorite_service.get_favorites()
+            ]
 
-    search_fav = st.text_input('즐겨찾기 내 검색', placeholder='영화명으로 검색')
+    except Exception:
+        st.error("즐겨찾기 목록을 불러오지 못했습니다.")
+        st.stop()
+
+    search_fav = st.text_input(
+        "즐겨찾기 내 검색",
+        placeholder="영화명으로 검색",
+    )
+
     if search_fav:
-        favorites = [f for f in favorites if search_fav in f['movie_nm']]
+        favorites = [
+            favorite
+            for favorite in favorites
+            if search_fav in favorite["movie_nm"]
+        ]
 
     if not favorites:
-        st.info('즐겨찾기한 영화가 없습니다. "카탈로그" 탭에서 먼저 추가해보세요.')
+        st.info(
+            '즐겨찾기한 영화가 없습니다. '
+            '"카탈로그" 탭에서 먼저 추가해보세요.'
+        )
 
-    for f in favorites:
+    for favorite in favorites:
         c1, c2, c3 = st.columns([4, 1, 1])
-        c1.write(f'**{f["movie_nm"]}** · 메모: {f.get("memo") or "-"}')
 
-        if c2.button('수정', key=f'edit_fav_{f["id"]}'):
-            st.session_state.editing_fav = f['id']
+        c1.write(
+            f'**{favorite["movie_nm"]}** · '
+            f'메모: {favorite.get("memo") or "-"}'
+        )
+
+        if c2.button(
+            "수정",
+            key=f'edit_fav_{favorite["id"]}',
+        ):
+            st.session_state.editing_fav = favorite["id"]
             st.rerun()
 
-        if c3.button('삭제', key=f'del_fav_{f["id"]}'):
-            st.session_state.confirming_delete = f['id']  # "확인 중" 상태로 표시만 하고, 아직 지우지 않음
+        if c3.button(
+            "삭제",
+            key=f'del_fav_{favorite["id"]}',
+        ):
+            st.session_state.confirming_delete = favorite["id"]
             st.rerun()
 
-        # 방금 "삭제" 버튼을 누른 항목이면, 진짜 지울지 확인하는 문구+버튼을 보여줌
-        if st.session_state.get('confirming_delete') == f['id']:
-            st.warning(f'"{f["movie_nm"]}"을(를) 정말 삭제하시겠습니까?')
+        if (
+            st.session_state.get("confirming_delete")
+            == favorite["id"]
+        ):
+            st.warning(
+                f'"{favorite["movie_nm"]}"을(를) '
+                "정말 삭제하시겠습니까?"
+            )
+
             confirm_col, cancel_col = st.columns(2)
-            if confirm_col.button('네, 삭제합니다', key=f'confirm_del_{f["id"]}'):
-                requests.delete(f'{API_BASE}/favorites/{f["id"]}')
-                st.session_state.confirming_delete = None
-                st.success('즐겨찾기 삭제됨')
-                st.rerun()
-            if cancel_col.button('취소', key=f'cancel_del_{f["id"]}'):
+
+            if confirm_col.button(
+                "네, 삭제합니다",
+                key=f'confirm_del_{favorite["id"]}',
+            ):
+                try:
+                    with open_services() as (
+                        _,
+                        favorite_service,
+                    ):
+                        favorite_service.delete_favorite(
+                            favorite["id"]
+                        )
+
+                except HTTPException as error:
+                    st.warning(error.detail)
+
+                except Exception:
+                    st.error("즐겨찾기 삭제 중 오류가 발생했습니다.")
+
+                else:
+                    st.session_state.confirming_delete = None
+                    st.success("즐겨찾기 삭제됨")
+                    st.rerun()
+
+            if cancel_col.button(
+                "취소",
+                key=f'cancel_del_{favorite["id"]}',
+            ):
                 st.session_state.confirming_delete = None
                 st.rerun()
 
-        if st.session_state.get('editing_fav') == f['id']:
-            with st.form(f'edit_fav_form_{f["id"]}'):
-                new_memo = st.text_input('메모', f.get('memo') or '')
-                save = st.form_submit_button('저장')
+        if (
+            st.session_state.get("editing_fav")
+            == favorite["id"]
+        ):
+            with st.form(
+                f'edit_fav_form_{favorite["id"]}'
+            ):
+                new_memo = st.text_input(
+                    "메모",
+                    favorite.get("memo") or "",
+                    max_chars=200,
+                )
+
+                save = st.form_submit_button("저장")
+
             if save:
-                requests.patch(f'{API_BASE}/favorites/{f["id"]}', json={'memo': new_memo})
-                st.session_state.editing_fav = None
-                st.success('수정됨')
-                st.rerun()
+                try:
+                    with open_services() as (
+                        _,
+                        favorite_service,
+                    ):
+                        favorite_service.update_favorite(
+                            favorite["id"],
+                            FavoriteUpdateRequest(
+                                memo=new_memo
+                            ),
+                        )
+
+                except HTTPException as error:
+                    st.warning(error.detail)
+
+                except Exception:
+                    st.error("메모 수정 중 오류가 발생했습니다.")
+
+                else:
+                    st.session_state.editing_fav = None
+                    st.success("수정됨")
+                    st.rerun()
