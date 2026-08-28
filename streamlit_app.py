@@ -1,10 +1,8 @@
 '''
 streamlit_app.py
 
-- "카탈로그" 탭: KOBIS API를 실시간으로 직접 호출해서 보여줌 (팀원 A 담당)
-                 .env의 KOBIS_API_KEY 사용
-- "즐겨찾기 관리" 탭: 즐겨찾기 메모 수정 / 삭제 (팀원 C 담당)
-  (즐겨찾기 추가는 카탈로그 탭의 "즐겨찾기" 버튼에서 이루어짐 - 팀원 B 영역)
+- "카탈로그" 탭: KOBIS API를 실시간으로 직접 호출해서 보여줌
+- "즐겨찾기 관리" 탭: 즐겨찾기 메모 수정 / 삭제
 '''
 import streamlit as st
 
@@ -30,10 +28,18 @@ from schema.request import (
 from services.favorite_service import FavoriteService
 from services.movie_service import MovieService
 
-KOBIS_LIST_URL = 'https://www.kobis.or.kr/kobisopenapi/webservice/rest/movie/searchMovieList.json'
-KOBIS_INFO_URL = 'https://www.kobis.or.kr/kobisopenapi/webservice/rest/movie/searchMovieInfo.json'
+KOBIS_LIST_URL = (
+    "https://www.kobis.or.kr/kobisopenapi/"
+    "webservice/rest/movie/searchMovieList.json"
+)
 
-st.title('🎬 영화 카탈로그 & 즐겨찾기')
+KOBIS_INFO_URL = (
+    "https://www.kobis.or.kr/kobisopenapi/"
+    "webservice/rest/movie/searchMovieInfo.json"
+)
+
+st.title("🎬 영화 카탈로그 & 즐겨찾기")
+
 
 @st.cache_resource
 def initialize_database():
