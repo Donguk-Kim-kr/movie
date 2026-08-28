@@ -5,7 +5,7 @@ import streamlit as st
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-DATABASE_URL = st.secrets["DATABASE_URL"]
+DATABASE_URL = "sqlite:///moviedb.sqlite3"
 
 @st.cache_resource
 def get_engine():
