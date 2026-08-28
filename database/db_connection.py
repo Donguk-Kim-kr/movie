@@ -11,7 +11,10 @@ DATABASE_URL = "sqlite:///moviedb.sqlite3"
 def get_engine():
     return create_engine(
         DATABASE_URL,
-        pool_pre_ping=True,
+        connect_args={
+            "check_same_thread": False,
+            "timeout": 30,
+        },
     )
 
 engine = get_engine()
@@ -25,6 +28,7 @@ SessionFactory = sessionmaker(
 
 def get_session():
     session = SessionFactory()
+
     try:
         yield session
 
