@@ -245,7 +245,7 @@ with tab_catalog:
     st.caption(caption)
 
     for m in movies:
-        c1, c2 = st.columns([7, 1])
+        c1, c2 = st.columns([6, 2])
         c1.write(f'**{m["movieNm"]}** · {m.get("openDt") or "-"} · {m.get("genreAlt") or "-"} · {m.get("nationAlt") or "-"}')
         # ------------------ 즐겨찾기 추가 (팀원 B 담당 영역) ------------------
         if c2.button('즐겨찾기', key=f'fav_{m["movieCd"]}'):
