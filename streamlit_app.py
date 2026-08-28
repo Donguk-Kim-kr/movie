@@ -6,8 +6,14 @@ streamlit_app.py
 - "즐겨찾기 관리" 탭: 즐겨찾기 메모 수정 / 삭제 (팀원 C 담당)
   (즐겨찾기 추가는 카탈로그 탭의 "즐겨찾기" 버튼에서 이루어짐 - 팀원 B 영역)
 '''
-import requests
 import streamlit as st
+
+st.set_page_config(
+    page_title="영화 즐겨찾기",
+    page_icon="🎬",
+)
+
+import requests
 from contextlib import contextmanager
 
 from fastapi import HTTPException
@@ -27,7 +33,6 @@ from services.movie_service import MovieService
 KOBIS_LIST_URL = 'https://www.kobis.or.kr/kobisopenapi/webservice/rest/movie/searchMovieList.json'
 KOBIS_INFO_URL = 'https://www.kobis.or.kr/kobisopenapi/webservice/rest/movie/searchMovieInfo.json'
 
-st.set_page_config(page_title='영화 즐겨찾기', page_icon='🎬')
 st.title('🎬 영화 카탈로그 & 즐겨찾기')
 
 @st.cache_resource
